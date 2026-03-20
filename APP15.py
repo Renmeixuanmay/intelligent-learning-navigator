@@ -8,17 +8,23 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import os
 
-# 在文件开头（import 之后）添加以下代码
-# 尝试多种常见中文字体
-plt.rcParams['font.sans-serif'] = [
-    'WenQuanYi Zen Hei',      # 文泉驿正黑，部分 Linux 发行版预装
-    'Noto Sans CJK SC',       # Google Noto 字体
-    'SimHei',                  #  Windows 黑体（可能无效但保留）
-    'Microsoft YaHei',         # 微软雅黑（可能无效但保留）
-    'DejaVu Sans'              # 最后 fallback
-]
-plt.rcParams['axes.unicode_minus'] = False   # 解决负号显示问题
+# 获取当前文件所在目录
+current_dir = os.path.dirname(__file__)
+font_path = os.path.join(current_dir, 'wqy-zenhei.ttc')  # 请确保文件名与您放入的文件一致
+
+# 检查字体文件是否存在
+if os.path.exists(font_path):
+    fm.fontManager.addfont(font_path)
+    plt.rcParams['font.family'] = fm.FontProperties(fname=font_path).get_name()
+else:
+    # 如果字体文件不存在，使用备选方案
+    plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+
+plt.rcParams['axes.unicode_minus'] = False
 
 # ============================================================
 # 核心算法类定义
