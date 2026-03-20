@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # 在文件开头（import 之后）添加以下代码
-
 # 尝试多种常见中文字体
 plt.rcParams['font.sans-serif'] = [
     'WenQuanYi Zen Hei',      # 文泉驿正黑，部分 Linux 发行版预装
@@ -20,13 +19,6 @@ plt.rcParams['font.sans-serif'] = [
     'DejaVu Sans'              # 最后 fallback
 ]
 plt.rcParams['axes.unicode_minus'] = False   # 解决负号显示问题
-
-# ============================================================
-# 设置 matplotlib 中文字体
-# ============================================================
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
-
 
 # ============================================================
 # 核心算法类定义
@@ -480,9 +472,7 @@ def auto_run_strategy(strategy, student, current_history, start_step):
 st.set_page_config(page_title="智学导航 · UA-MPC 演示", layout="wide")
 st.title("🧠 智学导航：基于不确定性感知的个性化学习路径规划系统 (UA-MPC)")
 
-
 # 添加自定义 CSS 使表格所有单元格居中
-# 在 st.set_page_config 之后，添加以下 CSS
 st.markdown("""
 <style>
     /* 强制所有表格单元格内容居中 */
