@@ -556,7 +556,6 @@ class DKTDKTGreedyStrategy(BaseStrategy):
     def select_action(self, state):
         # 记录当前状态到历史（用于 DKT 特征提取）
         self.history['states'].append(state['mastery'].copy())
-        # 提取 DKT 特征（可选，这里暂不使用，直接使用原始 mastery）
         # 为简化，使用当前掌握度作为状态估计，选择掌握度最低的概念
         mastery = state['mastery']
         return np.argmin(mastery)
@@ -802,12 +801,14 @@ with st.sidebar:
             st.write(f"**UA-MPC 最终知识水平**：{ua_mean[-1]:.3f} ± {ua_std[-1]:.3f}")
             st.write(f"**{st.session_state.compare_type} 最终知识水平**：{comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}")
 
+            # 保留学生对象，以便热力图显示最终状态；清空策略对象避免干扰
+            st.session_state.student = student2  # 保留最后一个对比策略的学生对象（或 student1，根据需求）
+            st.session_state.strategy_ua = None
+            st.session_state.strategy_compare = None
             st.session_state.history = all_hist
             st.session_state.step_count = 45
             st.session_state.done = True
-            st.session_state.student = None
-            st.session_state.strategy_ua = None
-            st.session_state.strategy_compare = None
+            # 不再清空 student，这样热力图会显示最后一次运行结束时的状态
 
     st.divider()
     if st.button("🔄 重置学生", use_container_width=True):
@@ -1028,10 +1029,10 @@ st.subheader("📋 教学历史记录")
 if st.session_state.history:
     # 导出CSV按钮（修复中文乱码）
     df = pd.DataFrame(st.session_state.history)
-    csv = df.to_csv(index=False, encoding='utf-8-sig')
+    csv_data = df.to_csv(index=False, encoding='utf-8-sig')
     st.download_button(
         label="📥 导出历史记录为CSV",
-        data=csv,
+        data=csv_data,
         file_name="teaching_history.csv",
         mime="text/csv",
         use_container_width=True
