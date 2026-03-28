@@ -802,6 +802,7 @@ with st.sidebar:
             st.write(f"**{st.session_state.compare_type} 最终知识水平**：{comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}")
 
             # 添加对比表格
+            # 添加对比表格
             avg_reward_ua = np.mean([step['reward'] for step in hist1])
             avg_reward_comp = np.mean([step['reward'] for step in hist2])
             improvement = (ua_mean[-1] - comp_mean[-1]) / comp_mean[-1] * 100 if comp_mean[-1] != 0 else 0
@@ -809,11 +810,12 @@ with st.sidebar:
                 "策略": ["UA-MPC", st.session_state.compare_type],
                 "最终知识水平": [f"{ua_mean[-1]:.3f} ± {ua_std[-1]:.3f}", f"{comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}"],
                 "平均奖励": [f"{avg_reward_ua:.2f}", f"{avg_reward_comp:.2f}"],
-                "提升率": ["—", f"{improvement:.1f}%"]
+                "相对提升": [f"{improvement:.1f}% (vs {st.session_state.compare_type})", "—"]
             }
             df_compare = pd.DataFrame(comparison_data)
             st.table(df_compare)
 
+            
             st.session_state.student = student2
             st.session_state.strategy_ua = None
             st.session_state.strategy_compare = None
