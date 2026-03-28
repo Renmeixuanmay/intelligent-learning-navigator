@@ -1,6 +1,6 @@
 """
 智学导航：基于不确定性感知的个性化学习路径规划系统 (UA-MPC)
-演示程序 - 完整版（包含 BKT-Thompson、IRT+贪心、DKT+贪心等基线）
+演示程序 - 完整版（包含 BKT-Thompson、IRT-MPC、DKT-MPC 等基线）
 """
 
 import streamlit as st
@@ -460,22 +460,50 @@ class BKTThompsonStrategy(BaseStrategy):
 
 
 # ============================================================
-# 新增基线：IRT + 贪心
+# 新增基线：IRT-MPC（项目反应理论 + 模型预测控制）
 # ============================================================
-class IRTGreedyStrategy(BaseStrategy):
-    def __init__(self):
-        super().__init__(name="IRT + 贪心")
+class IRTMPCStrategy(BaseStrategy):
+    """IRT 状态估计 + MPC 规划（无不确定性惩罚）"""
+    def __init__(self, student_env, paper_mode=False):
+        super().__init__(name="IRT-MPC")
+        if paper_mode:
+            self.planning_horizon = 5
+        else:
+            self.planning_horizon = 8
+        self.env_learning_rate = student_env.learning_rate
+        self.env_forget_factor = student_env.forget_factor
         self.ability_estimates = np.zeros(self.num_concepts) + 0.5
         self.discrimination = 1.0
 
     def select_action(self, state):
-        difficulties = state['difficulties']
-        match_scores = np.zeros(self.num_concepts)
-        for i in range(self.num_concepts):
-            z = self.discrimination * (self.ability_estimates[i] - difficulties[i])
-            p = 1.0 / (1.0 + np.exp(-z))
-            match_scores[i] = p
-        return np.argmax(match_scores)
+        best_action = None
+        best_score = -float('inf')
+        for action in range(self.num_concepts):
+            score = self._evaluate_action(state, action)
+            if score > best_score:
+                best_score = score
+                best_action = action
+        return best_action
+
+    def _evaluate_action(self, state, action):
+        total_reward = 0
+        discount = 0.95
+        current_state = state['mastery'].copy()
+        difficulty = state['difficulties'][action]
+        for step in range(self.planning_horizon):
+            mastery = current_state[action]
+            p_success = mastery * (1 - difficulty)
+            gain = self.env_learning_rate * (1 - mastery) * (1 - difficulty)
+            next_mastery_success = min(0.95, mastery + gain)
+            reward_success = 1.2 + np.exp(gain * 4) * 3.0 + difficulty * 3.0
+            penalty = self.env_forget_factor * mastery * difficulty
+            next_mastery_fail = max(0.05, mastery - penalty)
+            reward_fail = -1.8
+            expected_reward = p_success * reward_success + (1 - p_success) * reward_fail
+            expected_next_mastery = p_success * next_mastery_success + (1 - p_success) * next_mastery_fail
+            total_reward += expected_reward * (discount ** step)
+            current_state[action] = expected_next_mastery
+        return total_reward
 
     def update(self, action, reward, next_state):
         step = 0.1
@@ -490,7 +518,7 @@ class IRTGreedyStrategy(BaseStrategy):
 
 
 # ============================================================
-# 新增基线：DKT + 贪心（使用轻量级 DKT 状态估计，贪心选择掌握度最低的概念）
+# 新增基线：DKT-MPC（深度知识追踪 + 模型预测控制）
 # ============================================================
 class LightweightDKTStateTracker:
     def __init__(self, n_concepts, hidden_dim=32):
@@ -546,19 +574,51 @@ class LightweightDKTStateTracker:
         return self.forward(features)
 
 
-class DKTDKTGreedyStrategy(BaseStrategy):
-    """基于 DKT 状态估计的贪心策略（选择掌握度最低的概念）"""
-    def __init__(self):
-        super().__init__(name="DKT + 贪心")
+class DKTMpcStrategy(BaseStrategy):
+    """DKT 状态估计 + MPC 规划（无不确定性惩罚）"""
+    def __init__(self, student_env, paper_mode=False):
+        super().__init__(name="DKT-MPC")
+        if paper_mode:
+            self.planning_horizon = 5
+        else:
+            self.planning_horizon = 8
+        self.env_learning_rate = student_env.learning_rate
+        self.env_forget_factor = student_env.forget_factor
         self.dkt_tracker = LightweightDKTStateTracker(self.num_concepts)
         self.history = {'states': [], 'actions': [], 'observations': [], 'rewards': []}
 
     def select_action(self, state):
-        # 记录当前状态到历史（用于 DKT 特征提取）
+        # 记录当前状态
         self.history['states'].append(state['mastery'].copy())
-        # 为简化，使用当前掌握度作为状态估计，选择掌握度最低的概念
+        # 使用 DKT 提取当前各概念的掌握度估计（演示中直接使用 mastery 作为状态）
         mastery = state['mastery']
-        return np.argmin(mastery)
+        best_action = None
+        best_score = -float('inf')
+        for action in range(self.num_concepts):
+            score = self._evaluate_action(state, action, mastery)
+            if score > best_score:
+                best_score = score
+                best_action = action
+        return best_action
+
+    def _evaluate_action(self, state, action, current_mastery):
+        total_reward = 0
+        discount = 0.95
+        difficulty = state['difficulties'][action]
+        mastery = current_mastery[action]
+        for step in range(self.planning_horizon):
+            p_success = mastery * (1 - difficulty)
+            gain = self.env_learning_rate * (1 - mastery) * (1 - difficulty)
+            next_mastery_success = min(0.95, mastery + gain)
+            reward_success = 1.2 + np.exp(gain * 4) * 3.0 + difficulty * 3.0
+            penalty = self.env_forget_factor * mastery * difficulty
+            next_mastery_fail = max(0.05, mastery - penalty)
+            reward_fail = -1.8
+            expected_reward = p_success * reward_success + (1 - p_success) * reward_fail
+            expected_next_mastery = p_success * next_mastery_success + (1 - p_success) * next_mastery_fail
+            total_reward += expected_reward * (discount ** step)
+            mastery = expected_next_mastery
+        return total_reward
 
     def update(self, action, reward, next_state):
         self.history['actions'].append(action)
@@ -566,7 +626,7 @@ class DKTDKTGreedyStrategy(BaseStrategy):
         obs = 1 if reward > 0 else 0
         self.history['observations'].append(obs)
         self.history['states'].append(next_state['mastery'].copy())
-        # 可在此调用 dkt_tracker.extract_deep_features 进行在线更新（演示略）
+        # 可选：在线更新 DKT 追踪器，演示略
 
     def reset(self):
         self.history = {'states': [], 'actions': [], 'observations': [], 'rewards': []}
@@ -708,7 +768,7 @@ with st.sidebar:
     if compare_on:
         compare_type = st.selectbox(
             "选择对比策略",
-            ["无不确定性 MPC", "SimpleEffective", "DQN", "随机策略", "BKT-Thompson", "IRT + 贪心", "DKT + 贪心"],
+            ["无不确定性 MPC", "SimpleEffective", "DQN", "随机策略", "BKT-Thompson", "IRT-MPC", "DKT-MPC"],
             index=0
         )
     else:
@@ -771,10 +831,10 @@ with st.sidebar:
                             strategy2 = RandomStrategy()
                         elif st.session_state.compare_type == "BKT-Thompson":
                             strategy2 = BKTThompsonStrategy()
-                        elif st.session_state.compare_type == "IRT + 贪心":
-                            strategy2 = IRTGreedyStrategy()
-                        elif st.session_state.compare_type == "DKT + 贪心":
-                            strategy2 = DKTDKTGreedyStrategy()
+                        elif st.session_state.compare_type == "IRT-MPC":
+                            strategy2 = IRTMPCStrategy(student_env=student2, paper_mode=use_paper)
+                        elif st.session_state.compare_type == "DKT-MPC":
+                            strategy2 = DKTMpcStrategy(student_env=student2, paper_mode=use_paper)
                         else:
                             strategy2 = None
                         hist2, _ = auto_run_strategy(strategy2, student2, [], 0)
@@ -812,7 +872,7 @@ with st.sidebar:
             st.write(f"**{st.session_state.compare_type} 最终知识水平**：{comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}")
 
             # 保留学生对象，以便热力图显示最终状态；清空策略对象避免干扰
-            st.session_state.student = student2  # 保留最后一个对比策略的学生对象（或 student1，根据需求）
+            st.session_state.student = student2
             st.session_state.strategy_ua = None
             st.session_state.strategy_compare = None
             st.session_state.history = all_hist
@@ -847,10 +907,10 @@ with st.sidebar:
                 st.session_state.strategy_compare = RandomStrategy()
             elif st.session_state.compare_type == "BKT-Thompson":
                 st.session_state.strategy_compare = BKTThompsonStrategy()
-            elif st.session_state.compare_type == "IRT + 贪心":
-                st.session_state.strategy_compare = IRTGreedyStrategy()
-            elif st.session_state.compare_type == "DKT + 贪心":
-                st.session_state.strategy_compare = DKTDKTGreedyStrategy()
+            elif st.session_state.compare_type == "IRT-MPC":
+                st.session_state.strategy_compare = IRTMPCStrategy(student_env=st.session_state.student, paper_mode=use_paper)
+            elif st.session_state.compare_type == "DKT-MPC":
+                st.session_state.strategy_compare = DKTMpcStrategy(student_env=st.session_state.student, paper_mode=use_paper)
             else:
                 st.session_state.strategy_compare = None
         else:
@@ -876,7 +936,6 @@ with col_left:
         mastery = state['mastery']
 
         # 独立计算不确定性，不依赖 strategy_ua
-        # 使用侧边栏的噪声尺度，若无可获取则使用默认 0.08
         cur_noise = st.session_state.get('noise_scale', 0.08) if 'noise_scale' in st.session_state else 0.08
         overall_uncertainty = compute_uncertainty(mastery, noise_scale=cur_noise, num_samples=30)
 
@@ -1073,8 +1132,8 @@ if st.session_state.history:
         '随机策略': '#2ca02c',
         'DQN': '#ff7f0e',
         'BKT-Thompson': '#9467bd',
-        'IRT + 贪心': '#8c564b',
-        'DKT + 贪心': '#e377c2'
+        'IRT-MPC': '#8c564b',
+        'DKT-MPC': '#e377c2'
     }
 
     for strategy in strategies:
@@ -1098,7 +1157,7 @@ st.markdown("""
 - 在模型预测控制中显式惩罚高不确定性，实现稳健教学决策  
 - 支持论文固定参数模式（勾选后参数与论文实验脚本完全一致）  
 - 一键对比功能：自动运行10次实验，绘制带误差带的平均学习曲线  
-- 对比策略：无不确定性MPC、SimpleEffective、DQN、随机策略、BKT-Thompson、IRT+贪心、DKT+贪心  
+- 对比策略：无不确定性MPC、SimpleEffective、DQN、随机策略、BKT-Thompson、IRT-MPC、DKT-MPC  
 - 辅助功能：不确定性热力图、数据导出、教师提示语
 
 ---
