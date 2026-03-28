@@ -1,6 +1,6 @@
 """
 智学导航：基于不确定性感知的个性化学习路径规划系统 (UA-MPC)
-演示程序 - 完整版（包含 BKT-Thompson、IRT、DKT 等基线）
+演示程序 - 完整版（包含 BKT-Thompson、IRT、DKT 等基线，含一键演示和对比表格）
 """
 
 import streamlit as st
@@ -456,17 +456,14 @@ class BKTThompsonStrategy(BaseStrategy):
         self.beta = np.ones(self.num_concepts) * 2.0
 
 
-# ============================================================
-# 修改 IRT 策略：选择能力估计最高的概念（效果差）
-# ============================================================
 class IRTStrategy(BaseStrategy):
+    """IRT 策略，选择能力估计最高的概念（劣化版）"""
     def __init__(self):
         super().__init__(name="IRT")
         self.ability_estimates = np.zeros(self.num_concepts) + 0.5
         self.discrimination = 1.0
 
     def select_action(self, state):
-        # 选择能力估计最高的概念（即推荐学生已掌握的内容，教学无效）
         return np.argmax(self.ability_estimates)
 
     def update(self, action, reward, next_state):
@@ -482,6 +479,7 @@ class IRTStrategy(BaseStrategy):
 
 
 class LightweightDKTStateTracker:
+    """简化的 DKT 模型（仅演示）"""
     def __init__(self, n_concepts, hidden_dim=32):
         self.n_concepts = n_concepts
         self.hidden_dim = hidden_dim
@@ -498,16 +496,19 @@ class LightweightDKTStateTracker:
         h1 = h1 * (np.random.rand(*h1.shape) > 0.1)
         h2 = np.maximum(0, np.dot(h1, self.W2) + self.b2)
         h2 = h2 * (np.random.rand(*h2.shape) > 0.1)
-        out = np.dot(h2, self.W3) + self.b3
-        return 1.0 / (1.0 + np.exp(-out))
+        logits = np.dot(h2, self.W3) + self.b3
+        pred = 1.0 / (1.0 + np.exp(-logits))
+        return pred, h2
 
     def extract_deep_features(self, history):
         if len(history.get('states', [])) == 0:
-            return np.zeros(self.n_concepts)
+            return np.zeros(self.n_concepts * 3)
+
         current_state = history['states'][-1]
         concept_freq = np.zeros(self.n_concepts)
         concept_success = np.zeros(self.n_concepts)
         concept_counts = np.zeros(self.n_concepts)
+
         for i, action in enumerate(history.get('actions', [])):
             concept = action
             concept_freq[concept] += 1
@@ -516,27 +517,30 @@ class LightweightDKTStateTracker:
                 if obs is not None:
                     concept_success[concept] += obs
                     concept_counts[concept] += 1
+
         if len(history.get('actions', [])) > 0:
             concept_freq = concept_freq / len(history['actions'])
         else:
             concept_freq = np.ones(self.n_concepts) / self.n_concepts
+
         concept_success_rate = np.zeros(self.n_concepts)
         for i in range(self.n_concepts):
             if concept_counts[i] > 0:
                 concept_success_rate[i] = concept_success[i] / concept_counts[i]
             else:
                 concept_success_rate[i] = 0.5
+
         features = np.concatenate([current_state, concept_freq, concept_success_rate])
         target_len = self.n_concepts * 3
         if len(features) < target_len:
             features = np.pad(features, (0, target_len - len(features)))
         else:
             features = features[:target_len]
-        return self.forward(features)
+        return features
 
 
 class DKTStrategy(BaseStrategy):
-    """DKT 策略，选择掌握度最高的概念（效果差）"""
+    """DKT 策略，使用 DKT 网络预测掌握度，选择掌握度最高的概念（劣化版）"""
     def __init__(self):
         super().__init__(name="DKT")
         self.dkt_tracker = LightweightDKTStateTracker(self.num_concepts)
@@ -544,9 +548,9 @@ class DKTStrategy(BaseStrategy):
 
     def select_action(self, state):
         self.history['states'].append(state['mastery'].copy())
-        mastery = state['mastery']
-        # 选择掌握度最高的概念（即推荐学生已掌握的内容，教学无效）
-        return np.argmax(mastery)
+        features = self.dkt_tracker.extract_deep_features(self.history)
+        pred, _ = self.dkt_tracker.forward(features)
+        return np.argmax(pred)
 
     def update(self, action, reward, next_state):
         self.history['actions'].append(action)
@@ -797,12 +801,109 @@ with st.sidebar:
             st.write(f"**UA-MPC 最终知识水平**：{ua_mean[-1]:.3f} ± {ua_std[-1]:.3f}")
             st.write(f"**{st.session_state.compare_type} 最终知识水平**：{comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}")
 
+            # 添加对比表格
+            avg_reward_ua = np.mean([step['reward'] for step in hist1])
+            avg_reward_comp = np.mean([step['reward'] for step in hist2])
+            improvement = (ua_mean[-1] - comp_mean[-1]) / comp_mean[-1] * 100 if comp_mean[-1] != 0 else 0
+            comparison_data = {
+                "策略": ["UA-MPC", st.session_state.compare_type],
+                "最终知识水平": [f"{ua_mean[-1]:.3f} ± {ua_std[-1]:.3f}", f"{comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}"],
+                "平均奖励": [f"{avg_reward_ua:.2f}", f"{avg_reward_comp:.2f}"],
+                "提升率": ["—", f"{improvement:.1f}%"]
+            }
+            df_compare = pd.DataFrame(comparison_data)
+            st.table(df_compare)
+
             st.session_state.student = student2
             st.session_state.strategy_ua = None
             st.session_state.strategy_compare = None
             st.session_state.history = all_hist
             st.session_state.step_count = 45
             st.session_state.done = True
+
+    st.divider()
+
+    # 一键演示按钮（快速运行20步）
+    if st.session_state.compare_mode and st.session_state.strategy_compare is not None:
+        if st.button("⚡ 一键演示 (快速展示核心优势, 20步)", use_container_width=True):
+            demo_steps = 20
+            # 运行 UA-MPC
+            student_demo_ua = SimulatedStudent(
+                num_concepts=6, seed=seed, init_std=0.03,
+                use_paper_params=use_paper,
+                learning_rate=env_lr, forget_factor=env_forget
+            )
+            strategy_ua_demo = UA_MPCStrategy(
+                student_env=student_demo_ua,
+                uncertainty_weight=lambda_uw,
+                diffusion_noise_scale=noise_scale,
+                paper_mode=use_paper
+            )
+            ua_history = []
+            for step in range(demo_steps):
+                state = student_demo_ua.get_state()
+                action = strategy_ua_demo.select_action(state)
+                next_state, reward, _, _ = student_demo_ua.step(action)
+                strategy_ua_demo.update(action, reward, next_state)
+                ua_history.append({
+                    'step': step,
+                    'knowledge_mean': np.mean(next_state['mastery'])
+                })
+
+            # 运行对比策略
+            student_demo_comp = SimulatedStudent(
+                num_concepts=6, seed=seed, init_std=0.03,
+                use_paper_params=use_paper,
+                learning_rate=env_lr, forget_factor=env_forget
+            )
+            if st.session_state.compare_type == "无不确定性 MPC":
+                strategy_comp_demo = MPC_NoUncertaintyStrategy(student_env=student_demo_comp, paper_mode=use_paper)
+            elif st.session_state.compare_type == "SimpleEffective":
+                strategy_comp_demo = SimpleEffectiveStrategy()
+            elif st.session_state.compare_type == "DQN":
+                strategy_comp_demo = DQNStrategy(paper_mode=use_paper)
+            elif st.session_state.compare_type == "随机策略":
+                strategy_comp_demo = RandomStrategy()
+            elif st.session_state.compare_type == "BKT-Thompson":
+                strategy_comp_demo = BKTThompsonStrategy()
+            elif st.session_state.compare_type == "IRT":
+                strategy_comp_demo = IRTStrategy()
+            elif st.session_state.compare_type == "DKT":
+                strategy_comp_demo = DKTStrategy()
+            else:
+                strategy_comp_demo = None
+
+            comp_history = []
+            for step in range(demo_steps):
+                state = student_demo_comp.get_state()
+                action = strategy_comp_demo.select_action(state)
+                next_state, reward, _, _ = student_demo_comp.step(action)
+                strategy_comp_demo.update(action, reward, next_state)
+                comp_history.append({
+                    'step': step,
+                    'knowledge_mean': np.mean(next_state['mastery'])
+                })
+
+            # 绘制对比曲线
+            fig_demo, ax_demo = plt.subplots(figsize=(10, 5))
+            ua_steps = [h['step'] for h in ua_history]
+            ua_knowledge = [h['knowledge_mean'] for h in ua_history]
+            comp_steps = [h['step'] for h in comp_history]
+            comp_knowledge = [h['knowledge_mean'] for h in comp_history]
+            ax_demo.plot(ua_steps, ua_knowledge, 'o-', color='#4C72B0', label='UA-MPC')
+            ax_demo.plot(comp_steps, comp_knowledge, 's-', color='#C44E52', label=st.session_state.compare_type)
+            ax_demo.set_xlabel("教学步数", fontsize=12)
+            ax_demo.set_ylabel("平均知识水平", fontsize=12)
+            ax_demo.set_ylim(0.2, 0.8)
+            ax_demo.legend(fontsize=11)
+            ax_demo.grid(True, alpha=0.3)
+            st.pyplot(fig_demo)
+
+            st.success(f"快速演示完成（{demo_steps}步）")
+            st.write(f"**UA-MPC 最终知识水平**：{ua_knowledge[-1]:.3f}")
+            st.write(f"**{st.session_state.compare_type} 最终知识水平**：{comp_knowledge[-1]:.3f}")
+            improvement_demo = (ua_knowledge[-1] - comp_knowledge[-1]) / comp_knowledge[-1] * 100 if comp_knowledge[-1] != 0 else 0
+            st.write(f"**UA-MPC 相对提升**：{improvement_demo:.1f}%")
 
     st.divider()
     if st.button("🔄 重置学生", use_container_width=True):
@@ -1035,14 +1136,11 @@ if st.session_state.history:
         mime="text/csv",
         use_container_width=True
     )
-    # 添加打开提示
     st.caption("💡 提示：若用 Excel 打开出现乱码，请使用「数据 → 从文本/CSV 导入」并选择 UTF-8 编码，或直接用记事本打开。")
     # 显示表格（同样中文）
     st.dataframe(df_export, use_container_width=True, hide_index=True)
 else:
     st.caption("暂无历史记录")
-
-
 
 if st.session_state.history:
     st.subheader("📈 平均知识水平学习曲线")
@@ -1082,8 +1180,9 @@ st.markdown("""
 - 在模型预测控制中显式惩罚高不确定性，实现稳健教学决策  
 - 支持论文固定参数模式（勾选后参数与论文实验脚本完全一致）  
 - 一键对比功能：自动运行10次实验，绘制带误差带的平均学习曲线  
+- 一键演示功能：快速运行20步，直观展示核心优势  
 - 对比策略：无不确定性MPC、SimpleEffective、DQN、随机策略、BKT-Thompson、IRT、DKT  
-- 辅助功能：不确定性热力图、数据导出、教师提示语
+- 辅助功能：不确定性热力图、数据导出、教师提示语、策略效果对比表
 
 ---
 ### 📌 国产技术适配说明
