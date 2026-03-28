@@ -25,7 +25,7 @@ else:
 plt.rcParams['axes.unicode_minus'] = False
 
 # ============================================================
-# 核心算法类定义（保持原有不变）
+# 核心算法类定义
 # ============================================================
 
 class ConditionedDiffusionModel:
@@ -138,8 +138,7 @@ class SimulatedStudent:
 
 
 # ============================================================
-# 策略基类与具体策略（保持 UA-MPC、无不确定性 MPC、SimpleEffective、Random、DQN、BKT-Thompson 不变）
-# 仅修改 IRT 和 DKT 策略
+# 策略基类与具体策略
 # ============================================================
 
 class BaseStrategy:
@@ -162,43 +161,308 @@ class BaseStrategy:
 
 
 class UA_MPCStrategy(BaseStrategy):
-    # 与原代码完全相同，省略中间部分以节省篇幅（实际部署时需完整保留）
-    # 此处仅示意，实际代码中应包含完整实现
-    pass
+    def __init__(self, student_env, uncertainty_weight=0.5, diffusion_noise_scale=0.08, paper_mode=False):
+        super().__init__(name="UA-MPC")
+        if paper_mode:
+            self.planning_horizon = 5
+            self.uncertainty_weight = uncertainty_weight
+            self.diffusion_model = ConditionedDiffusionModel(noise_scale=0.08)
+            self.uncertainty_estimator = UncertaintyEstimator()
+        else:
+            self.planning_horizon = 8
+            self.uncertainty_weight = uncertainty_weight
+            self.diffusion_model = ConditionedDiffusionModel(noise_scale=diffusion_noise_scale)
+            self.uncertainty_estimator = UncertaintyEstimator()
+
+        self.env_learning_rate = student_env.learning_rate
+        self.env_forget_factor = student_env.forget_factor
+        self.reset()
+
+    def select_action(self, state):
+        samples = self.diffusion_model.sample_states(state['mastery'], num_samples=20)
+        candidates = self._generate_candidates(state)
+        best_action = None
+        best_score = -float('inf')
+        for action in candidates:
+            score = self._evaluate_action_with_uncertainty(action, samples, state)
+            if score > best_score:
+                best_score = score
+                best_action = action
+        return best_action if best_action is not None else np.argmin(state['mastery'])
+
+    def _generate_candidates(self, state):
+        mastery = state['mastery']
+        gaps = 1 - mastery
+        success_rates = self._calculate_success_rate_vector()
+        teaching_freq = self._calculate_teaching_frequency()
+        scores = gaps * 1.5 + success_rates * 0.8 + (1 - teaching_freq) * 0.6
+        top_k = min(8, self.num_concepts)
+        top_concepts = np.argsort(scores)[-top_k:]
+        return list(top_concepts)
+
+    def _evaluate_action_with_uncertainty(self, action, samples, state):
+        total_reward = 0
+        total_uncertainty = 0
+        difficulty = state['difficulties'][action]
+        for s in samples:
+            current_state = s.copy()
+            for step in range(self.planning_horizon):
+                next_state, reward = self._predict_next_state(current_state, action, difficulty)
+                uncertainty = self.uncertainty_estimator.estimate_uncertainty([next_state])
+                total_reward += reward * (0.95 ** step)
+                total_uncertainty += uncertainty
+                current_state = next_state
+        avg_reward = total_reward / len(samples)
+        avg_uncertainty = total_uncertainty / len(samples)
+        return avg_reward - self.uncertainty_weight * avg_uncertainty
+
+    def _predict_next_state(self, current_state, action, difficulty):
+        mastery = current_state[action]
+        p_success = mastery * (1 - difficulty)
+        gain = self.env_learning_rate * (1 - mastery) * (1 - difficulty)
+        next_mastery_success = min(0.95, mastery + gain)
+        reward_success = 1.2 + np.exp(gain * 4) * 3.0 + difficulty * 3.0
+        penalty = self.env_forget_factor * mastery * difficulty
+        next_mastery_fail = max(0.05, mastery - penalty)
+        reward_fail = -1.8
+        expected_reward = p_success * reward_success + (1 - p_success) * reward_fail
+        expected_next_mastery = p_success * next_mastery_success + (1 - p_success) * next_mastery_fail
+        next_state = current_state.copy()
+        next_state[action] = expected_next_mastery
+        return next_state, expected_reward
+
+    def _calculate_success_rate(self, concept_idx):
+        if len(self.history['actions']) == 0:
+            return 0.5
+        correct = 0
+        total = 0
+        for i, act in enumerate(self.history['actions']):
+            if act == concept_idx and i < len(self.history['observations']) - 1:
+                obs = self.history['observations'][i + 1]
+                if obs is not None:
+                    total += 1
+                    if obs == 1:
+                        correct += 1
+        return correct / total if total > 0 else 0.5
+
+    def _calculate_success_rate_vector(self):
+        return np.array([self._calculate_success_rate(i) for i in range(self.num_concepts)])
+
+    def _calculate_teaching_frequency(self):
+        if len(self.history['actions']) == 0:
+            return np.zeros(self.num_concepts)
+        freq = np.zeros(self.num_concepts)
+        for act in self.history['actions']:
+            freq[act] += 1
+        return freq / len(self.history['actions'])
 
 
 class MPC_NoUncertaintyStrategy(BaseStrategy):
-    pass
+    def __init__(self, student_env, paper_mode=False):
+        super().__init__(name="无不确定性 MPC")
+        if paper_mode:
+            self.planning_horizon = 3
+            self.random_action_prob = 0.15
+            self.diffusion_model = ConditionedDiffusionModel(noise_scale=0.1)
+            self.samples_num = 12
+        else:
+            self.planning_horizon = 8
+            self.random_action_prob = 0.0
+            self.diffusion_model = ConditionedDiffusionModel(noise_scale=0.08)
+            self.samples_num = 20
+
+        self.env_learning_rate = student_env.learning_rate
+        self.env_forget_factor = student_env.forget_factor
+        self.history['states'] = []
+
+    def select_action(self, state):
+        self.history['states'].append(state['mastery'].copy())
+        if np.random.random() < self.random_action_prob:
+            return np.random.randint(0, self.num_concepts)
+
+        current_state = state['mastery']
+        samples = self.diffusion_model.sample_states(current_state, num_samples=self.samples_num)
+        best_action = None
+        best_score = -float('inf')
+        for action in range(self.num_concepts):
+            total_score = 0
+            difficulty = state['difficulties'][action]
+            for s in samples:
+                score = self._evaluate_action(s, action, difficulty)
+                total_score += score
+            avg_score = total_score / len(samples)
+            if avg_score > best_score:
+                best_score = avg_score
+                best_action = action
+        return best_action if best_action is not None else np.argmin(state['mastery'])
+
+    def _evaluate_action(self, start_state, action, difficulty):
+        total_reward = 0
+        discount = 0.95
+        state = start_state.copy()
+        for step in range(self.planning_horizon):
+            mastery = state[action]
+            p_success = mastery * (1 - difficulty)
+            gain = self.env_learning_rate * (1 - mastery) * (1 - difficulty)
+            next_mastery_success = min(0.95, mastery + gain)
+            reward_success = 1.2 + np.exp(gain * 4) * 3.0 + difficulty * 3.0
+            penalty = self.env_forget_factor * mastery * difficulty
+            next_mastery_fail = max(0.05, mastery - penalty)
+            reward_fail = -1.8
+            expected_reward = p_success * reward_success + (1 - p_success) * reward_fail
+            expected_next_mastery = p_success * next_mastery_success + (1 - p_success) * next_mastery_fail
+            total_reward += expected_reward * (discount ** step)
+            state[action] = expected_next_mastery
+        return total_reward
+
+    def update(self, action, reward, next_state):
+        self.history['actions'].append(action)
+        self.history['rewards'].append(reward)
+        obs = 1 if reward > 0 else 0
+        self.history['observations'].append(obs)
+        self.history['states'].append(next_state['mastery'].copy())
+
+    def reset(self):
+        self.history = {'actions': [], 'rewards': [], 'observations': [], 'states': []}
 
 
 class SimpleEffectiveStrategy(BaseStrategy):
-    pass
+    def __init__(self):
+        super().__init__(name="SimpleEffective")
+
+    def select_action(self, state):
+        return np.argmin(state['mastery'])
 
 
 class RandomStrategy(BaseStrategy):
-    pass
+    def __init__(self):
+        super().__init__(name="随机策略")
+
+    def select_action(self, state):
+        return np.random.randint(0, self.num_concepts)
 
 
 class DQNStrategy(BaseStrategy):
-    pass
+    def __init__(self, paper_mode=False):
+        super().__init__(name="DQN")
+        self.num_concepts = 6
+        self.state_bins = 5
+        self.state_shape = tuple([self.state_bins] * self.num_concepts)
+        self.q_table = np.random.randn(*self.state_shape + (self.num_concepts,)) * 0.1
+        self.learning_rate = 0.2
+        self.discount_factor = 0.85
+        if paper_mode:
+            self.epsilon = 0.35
+            self.min_epsilon = 0.15
+            self.epsilon_decay = 0.995
+        else:
+            self.epsilon = 0.0
+            self.min_epsilon = 0.0
+            self.epsilon_decay = 1.0
+
+        self.recent_experience = []
+        self.max_experience = 50
+        self.last_state = None
+        self.last_action = None
+
+    def _discretize_state(self, state_dict):
+        mastery = state_dict['mastery']
+        discrete_state = []
+        for m in mastery:
+            bin_idx = min(int(m * self.state_bins), self.state_bins - 1)
+            discrete_state.append(bin_idx)
+        return tuple(discrete_state)
+
+    def select_action(self, state):
+        discrete_state = self._discretize_state(state)
+        if np.random.random() < self.epsilon:
+            mastery = state['mastery']
+            weights = 1.0 - np.array(mastery)
+            weights = weights / np.sum(weights)
+            action = np.random.choice(self.num_concepts, p=weights)
+        else:
+            q_values = self.q_table[discrete_state]
+            action = np.argmax(q_values)
+        self.last_state = discrete_state
+        self.last_action = action
+        return action
+
+    def update(self, action, reward, next_state):
+        next_discrete_state = self._discretize_state(next_state)
+        self.recent_experience.append({
+            'state': self.last_state,
+            'action': action,
+            'reward': reward,
+            'next_state': next_discrete_state
+        })
+        if len(self.recent_experience) > self.max_experience:
+            self.recent_experience.pop(0)
+
+        current_q = self.q_table[self.last_state][action]
+        max_next_q = np.max(self.q_table[next_discrete_state])
+        target_q = reward + self.discount_factor * max_next_q
+        new_q = current_q + self.learning_rate * (target_q - current_q)
+        self.q_table[self.last_state][action] = new_q
+
+        if len(self.recent_experience) >= 10 and np.random.random() < 0.3:
+            self._experience_replay()
+
+        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+
+    def _experience_replay(self):
+        batch_size = min(8, len(self.recent_experience))
+        indices = np.random.choice(len(self.recent_experience), batch_size, replace=False)
+        for idx in indices:
+            exp = self.recent_experience[idx]
+            state = exp['state']
+            action = exp['action']
+            reward = exp['reward']
+            next_state = exp['next_state']
+            current_q = self.q_table[state][action]
+            max_next_q = np.max(self.q_table[next_state])
+            target_q = reward + self.discount_factor * max_next_q
+            new_q = current_q + self.learning_rate * (target_q - current_q)
+            self.q_table[state][action] = new_q
+
+    def reset(self):
+        self.q_table = np.random.randn(*self.q_table.shape) * 0.1
+        self.epsilon = 0.35
+        self.recent_experience = []
+        self.last_state = None
+        self.last_action = None
+        super().reset()
 
 
 class BKTThompsonStrategy(BaseStrategy):
-    pass
+    def __init__(self):
+        super().__init__(name="BKT-Thompson")
+        self.alpha = np.ones(self.num_concepts) * 2.0
+        self.beta = np.ones(self.num_concepts) * 2.0
+
+    def select_action(self, state):
+        sampled_values = np.zeros(self.num_concepts)
+        for i in range(self.num_concepts):
+            sampled_values[i] = np.random.beta(self.alpha[i], self.beta[i])
+        return np.argmax(sampled_values)
+
+    def update(self, action, reward, next_state):
+        if reward > 0:
+            self.alpha[action] += 1
+        else:
+            self.beta[action] += 1
+
+    def reset(self):
+        self.alpha = np.ones(self.num_concepts) * 2.0
+        self.beta = np.ones(self.num_concepts) * 2.0
 
 
-# ============================================================
-# 修改后的 IRT 策略（纯 IRT，选择能力最低的概念）
-# ============================================================
 class IRTStrategy(BaseStrategy):
-    """IRT 能力估计，选择能力最低的概念（即最需要干预的概念）"""
     def __init__(self):
         super().__init__(name="IRT")
         self.ability_estimates = np.zeros(self.num_concepts) + 0.5
         self.discrimination = 1.0
 
     def select_action(self, state):
-        # 选择能力估计最低的概念（而不是匹配度最高）
         return np.argmin(self.ability_estimates)
 
     def update(self, action, reward, next_state):
@@ -213,9 +477,6 @@ class IRTStrategy(BaseStrategy):
         self.ability_estimates = np.zeros(self.num_concepts) + 0.5
 
 
-# ============================================================
-# 修改后的 DKT 策略（纯 DKT，选择掌握度最低的概念）
-# ============================================================
 class LightweightDKTStateTracker:
     def __init__(self, n_concepts, hidden_dim=32):
         self.n_concepts = n_concepts
@@ -271,7 +532,6 @@ class LightweightDKTStateTracker:
 
 
 class DKTStrategy(BaseStrategy):
-    """DKT 状态估计，选择掌握度最低的概念"""
     def __init__(self):
         super().__init__(name="DKT")
         self.dkt_tracker = LightweightDKTStateTracker(self.num_concepts)
@@ -279,7 +539,6 @@ class DKTStrategy(BaseStrategy):
 
     def select_action(self, state):
         self.history['states'].append(state['mastery'].copy())
-        # 直接使用当前掌握度作为状态估计，选择掌握度最低的概念
         mastery = state['mastery']
         return np.argmin(mastery)
 
@@ -760,7 +1019,6 @@ st.subheader("📋 教学历史记录")
 if st.session_state.history:
     # 导出CSV（英文表头）
     df = pd.DataFrame(st.session_state.history)
-    # 重命名列为英文
     df_export = df.rename(columns={
         'step': 'Step',
         'strategy': 'Strategy',
