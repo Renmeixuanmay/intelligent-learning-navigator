@@ -815,7 +815,7 @@ with st.sidebar:
             df_compare = pd.DataFrame(comparison_data)
             st.table(df_compare)
 
-            
+
             st.session_state.student = student2
             st.session_state.strategy_ua = None
             st.session_state.strategy_compare = None
@@ -972,7 +972,7 @@ with col_left:
         std_mastery = np.std(samples_array, axis=0)
 
         # 条形图
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(8, 4))
         concepts = [f'概念{i+1}' for i in range(6)]
         x = np.arange(len(concepts))
         bars = ax.bar(x, mean_mastery, yerr=std_mastery, capsize=8,
@@ -987,7 +987,7 @@ with col_left:
         st.pyplot(fig)
 
         # 不确定性热力图
-        fig_heat, ax_heat = plt.subplots(figsize=(6, 2))
+        fig_heat, ax_heat = plt.subplots(figsize=(5, 2))
         heat_data = np.array([std_mastery])
         im = ax_heat.imshow(heat_data, cmap='Reds', aspect='auto', vmin=0, vmax=0.25)
         ax_heat.set_xticks(np.arange(len(concepts)))
