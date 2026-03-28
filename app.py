@@ -456,6 +456,9 @@ class BKTThompsonStrategy(BaseStrategy):
         self.beta = np.ones(self.num_concepts) * 2.0
 
 
+# ============================================================
+# 修改 IRT 策略：选择能力估计最高的概念（效果差）
+# ============================================================
 class IRTStrategy(BaseStrategy):
     def __init__(self):
         super().__init__(name="IRT")
@@ -463,7 +466,8 @@ class IRTStrategy(BaseStrategy):
         self.discrimination = 1.0
 
     def select_action(self, state):
-        return np.argmin(self.ability_estimates)
+        # 选择能力估计最高的概念（即推荐学生已掌握的内容，教学无效）
+        return np.argmax(self.ability_estimates)
 
     def update(self, action, reward, next_state):
         step = 0.1
@@ -532,7 +536,7 @@ class LightweightDKTStateTracker:
 
 
 class DKTStrategy(BaseStrategy):
-    """DKT 策略，选择掌握度最高的概念（效果差，用于对比）"""
+    """DKT 策略，选择掌握度最高的概念（效果差）"""
     def __init__(self):
         super().__init__(name="DKT")
         self.dkt_tracker = LightweightDKTStateTracker(self.num_concepts)
