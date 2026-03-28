@@ -609,6 +609,16 @@ def auto_run_strategy(strategy, student, current_history, start_step):
 
 
 # ============================================================
+# 独立的不确定性估计函数（避免依赖 strategy_ua）
+# ============================================================
+def compute_uncertainty(mastery, noise_scale=0.08, num_samples=30):
+    """独立计算当前状态的不确定性，不依赖策略对象"""
+    temp_model = ConditionedDiffusionModel(noise_scale=noise_scale)
+    samples = temp_model.sample_states(mastery, num_samples=num_samples)
+    return UncertaintyEstimator.estimate_uncertainty(samples)
+
+
+# ============================================================
 # Streamlit 应用界面
 # ============================================================
 
@@ -865,11 +875,17 @@ with col_left:
         state = st.session_state.student.get_state()
         mastery = state['mastery']
 
-        samples = st.session_state.strategy_ua.diffusion_model.sample_states(mastery, num_samples=30)
+        # 独立计算不确定性，不依赖 strategy_ua
+        # 使用侧边栏的噪声尺度，若无可获取则使用默认 0.08
+        cur_noise = st.session_state.get('noise_scale', 0.08) if 'noise_scale' in st.session_state else 0.08
+        overall_uncertainty = compute_uncertainty(mastery, noise_scale=cur_noise, num_samples=30)
+
+        # 同时计算各概念的不确定性（标准差）用于条形图误差棒
+        temp_model = ConditionedDiffusionModel(noise_scale=cur_noise)
+        samples = temp_model.sample_states(mastery, num_samples=30)
         samples_array = np.array(samples)
         mean_mastery = np.mean(samples_array, axis=0)
         std_mastery = np.std(samples_array, axis=0)
-        overall_uncertainty = np.mean(std_mastery)
 
         # 条形图
         fig, ax = plt.subplots(figsize=(10, 5))
