@@ -532,6 +532,7 @@ class LightweightDKTStateTracker:
 
 
 class DKTStrategy(BaseStrategy):
+    """DKT 策略，选择掌握度最高的概念（效果差，用于对比）"""
     def __init__(self):
         super().__init__(name="DKT")
         self.dkt_tracker = LightweightDKTStateTracker(self.num_concepts)
@@ -540,7 +541,8 @@ class DKTStrategy(BaseStrategy):
     def select_action(self, state):
         self.history['states'].append(state['mastery'].copy())
         mastery = state['mastery']
-        return np.argmin(mastery)
+        # 选择掌握度最高的概念（即推荐学生已掌握的内容，教学无效）
+        return np.argmax(mastery)
 
     def update(self, action, reward, next_state):
         self.history['actions'].append(action)
@@ -1017,17 +1019,11 @@ st.divider()
 
 st.subheader("📋 教学历史记录")
 if st.session_state.history:
-    # 导出CSV（英文表头）
+    # 导出CSV（使用中文表头，utf-8-sig 解决乱码）
     df = pd.DataFrame(st.session_state.history)
-    df_export = df.rename(columns={
-        'step': 'Step',
-        'strategy': 'Strategy',
-        'action_name': 'Concept',
-        'reward': 'Reward',
-        'knowledge_mean': 'Avg Knowledge',
-        'uncertainty': 'Uncertainty'
-    })
-    csv_data = df_export.to_csv(index=False, encoding='utf-8')
+    df_export = df[['step', 'strategy', 'action_name', 'reward', 'knowledge_mean', 'uncertainty']].copy()
+    df_export.columns = ['步数', '策略', '教学概念', '奖励', '平均知识水平', '不确定性']
+    csv_data = df_export.to_csv(index=False, encoding='utf-8-sig')
     st.download_button(
         label="📥 导出历史记录为CSV",
         data=csv_data,
@@ -1035,10 +1031,8 @@ if st.session_state.history:
         mime="text/csv",
         use_container_width=True
     )
-    # 显示表格（中文表头）
-    df_display = df[['step', 'strategy', 'action_name', 'reward', 'knowledge_mean', 'uncertainty']].copy()
-    df_display.columns = ['步数', '策略', '教学概念', '奖励', '平均知识水平', '不确定性']
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
+    # 显示表格（同样中文）
+    st.dataframe(df_export, use_container_width=True, hide_index=True)
 else:
     st.caption("暂无历史记录")
 
