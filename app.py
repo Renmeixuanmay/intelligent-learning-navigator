@@ -1035,10 +1035,14 @@ if st.session_state.history:
         mime="text/csv",
         use_container_width=True
     )
+    # 添加打开提示
+    st.caption("💡 提示：若用 Excel 打开出现乱码，请使用「数据 → 从文本/CSV 导入」并选择 UTF-8 编码，或直接用记事本打开。")
     # 显示表格（同样中文）
     st.dataframe(df_export, use_container_width=True, hide_index=True)
 else:
     st.caption("暂无历史记录")
+
+
 
 if st.session_state.history:
     st.subheader("📈 平均知识水平学习曲线")
