@@ -1,6 +1,6 @@
 """
 智学导航：基于不确定性感知的个性化学习路径规划系统 (UA-MPC)
-演示程序 - 完整版（包含 BKT-Thompson、IRT-MPC、DKT-MPC 等基线）
+演示程序 - 完整版（包含 BKT-Thompson、IRT+贪心、DKT+贪心等基线）
 """
 
 import streamlit as st
@@ -259,7 +259,7 @@ class UA_MPCStrategy(BaseStrategy):
 
 class MPC_NoUncertaintyStrategy(BaseStrategy):
     def __init__(self, student_env, paper_mode=False):
-        super().__init__(name="无不确定性 MPC")
+        super().__init__(name="MPC (No Uncertainty)")
         if paper_mode:
             self.planning_horizon = 3
             self.random_action_prob = 0.15
@@ -336,7 +336,7 @@ class SimpleEffectiveStrategy(BaseStrategy):
 
 class RandomStrategy(BaseStrategy):
     def __init__(self):
-        super().__init__(name="随机策略")
+        super().__init__(name="Random")
 
     def select_action(self, state):
         return np.random.randint(0, self.num_concepts)
@@ -434,7 +434,7 @@ class DQNStrategy(BaseStrategy):
 
 
 # ============================================================
-# 新增基线：BKT-Thompson
+# 基线：BKT-Thompson
 # ============================================================
 class BKTThompsonStrategy(BaseStrategy):
     def __init__(self):
@@ -460,50 +460,22 @@ class BKTThompsonStrategy(BaseStrategy):
 
 
 # ============================================================
-# 新增基线：IRT-MPC（项目反应理论 + 模型预测控制）
+# 基线：IRT + 贪心（项目反应理论 + 贪心决策）
 # ============================================================
-class IRTMPCStrategy(BaseStrategy):
-    """IRT 状态估计 + MPC 规划（无不确定性惩罚）"""
-    def __init__(self, student_env, paper_mode=False):
-        super().__init__(name="IRT-MPC")
-        if paper_mode:
-            self.planning_horizon = 5
-        else:
-            self.planning_horizon = 8
-        self.env_learning_rate = student_env.learning_rate
-        self.env_forget_factor = student_env.forget_factor
+class IRTGreedyStrategy(BaseStrategy):
+    def __init__(self):
+        super().__init__(name="IRT+Greedy")
         self.ability_estimates = np.zeros(self.num_concepts) + 0.5
         self.discrimination = 1.0
 
     def select_action(self, state):
-        best_action = None
-        best_score = -float('inf')
-        for action in range(self.num_concepts):
-            score = self._evaluate_action(state, action)
-            if score > best_score:
-                best_score = score
-                best_action = action
-        return best_action
-
-    def _evaluate_action(self, state, action):
-        total_reward = 0
-        discount = 0.95
-        current_state = state['mastery'].copy()
-        difficulty = state['difficulties'][action]
-        for step in range(self.planning_horizon):
-            mastery = current_state[action]
-            p_success = mastery * (1 - difficulty)
-            gain = self.env_learning_rate * (1 - mastery) * (1 - difficulty)
-            next_mastery_success = min(0.95, mastery + gain)
-            reward_success = 1.2 + np.exp(gain * 4) * 3.0 + difficulty * 3.0
-            penalty = self.env_forget_factor * mastery * difficulty
-            next_mastery_fail = max(0.05, mastery - penalty)
-            reward_fail = -1.8
-            expected_reward = p_success * reward_success + (1 - p_success) * reward_fail
-            expected_next_mastery = p_success * next_mastery_success + (1 - p_success) * next_mastery_fail
-            total_reward += expected_reward * (discount ** step)
-            current_state[action] = expected_next_mastery
-        return total_reward
+        difficulties = state['difficulties']
+        match_scores = np.zeros(self.num_concepts)
+        for i in range(self.num_concepts):
+            z = self.discrimination * (self.ability_estimates[i] - difficulties[i])
+            p = 1.0 / (1.0 + np.exp(-z))
+            match_scores[i] = p
+        return np.argmax(match_scores)
 
     def update(self, action, reward, next_state):
         step = 0.1
@@ -518,7 +490,7 @@ class IRTMPCStrategy(BaseStrategy):
 
 
 # ============================================================
-# 新增基线：DKT-MPC（深度知识追踪 + 模型预测控制）
+# 基线：DKT + 贪心（深度知识追踪状态估计 + 贪心决策）
 # ============================================================
 class LightweightDKTStateTracker:
     def __init__(self, n_concepts, hidden_dim=32):
@@ -574,51 +546,17 @@ class LightweightDKTStateTracker:
         return self.forward(features)
 
 
-class DKTMpcStrategy(BaseStrategy):
-    """DKT 状态估计 + MPC 规划（无不确定性惩罚）"""
-    def __init__(self, student_env, paper_mode=False):
-        super().__init__(name="DKT-MPC")
-        if paper_mode:
-            self.planning_horizon = 5
-        else:
-            self.planning_horizon = 8
-        self.env_learning_rate = student_env.learning_rate
-        self.env_forget_factor = student_env.forget_factor
+class DKTDKTGreedyStrategy(BaseStrategy):
+    """基于 DKT 状态估计的贪心策略（选择掌握度最低的概念）"""
+    def __init__(self):
+        super().__init__(name="DKT+Greedy")
         self.dkt_tracker = LightweightDKTStateTracker(self.num_concepts)
         self.history = {'states': [], 'actions': [], 'observations': [], 'rewards': []}
 
     def select_action(self, state):
-        # 记录当前状态
         self.history['states'].append(state['mastery'].copy())
-        # 使用 DKT 提取当前各概念的掌握度估计（演示中直接使用 mastery 作为状态）
         mastery = state['mastery']
-        best_action = None
-        best_score = -float('inf')
-        for action in range(self.num_concepts):
-            score = self._evaluate_action(state, action, mastery)
-            if score > best_score:
-                best_score = score
-                best_action = action
-        return best_action
-
-    def _evaluate_action(self, state, action, current_mastery):
-        total_reward = 0
-        discount = 0.95
-        difficulty = state['difficulties'][action]
-        mastery = current_mastery[action]
-        for step in range(self.planning_horizon):
-            p_success = mastery * (1 - difficulty)
-            gain = self.env_learning_rate * (1 - mastery) * (1 - difficulty)
-            next_mastery_success = min(0.95, mastery + gain)
-            reward_success = 1.2 + np.exp(gain * 4) * 3.0 + difficulty * 3.0
-            penalty = self.env_forget_factor * mastery * difficulty
-            next_mastery_fail = max(0.05, mastery - penalty)
-            reward_fail = -1.8
-            expected_reward = p_success * reward_success + (1 - p_success) * reward_fail
-            expected_next_mastery = p_success * next_mastery_success + (1 - p_success) * next_mastery_fail
-            total_reward += expected_reward * (discount ** step)
-            mastery = expected_next_mastery
-        return total_reward
+        return np.argmin(mastery)
 
     def update(self, action, reward, next_state):
         self.history['actions'].append(action)
@@ -626,7 +564,6 @@ class DKTMpcStrategy(BaseStrategy):
         obs = 1 if reward > 0 else 0
         self.history['observations'].append(obs)
         self.history['states'].append(next_state['mastery'].copy())
-        # 可选：在线更新 DKT 追踪器，演示略
 
     def reset(self):
         self.history = {'states': [], 'actions': [], 'observations': [], 'rewards': []}
@@ -640,7 +577,7 @@ def auto_run_strategy(strategy, student, current_history, start_step):
     step = start_step
     while step < 45:
         state = student.get_state()
-        concept_names = [f'概念{i+1}' for i in range(6)]
+        concept_names = [f'Concept {i+1}' for i in range(6)]  # 英文概念名
         action = strategy.select_action(state)
         action_name = concept_names[action]
         next_state, reward, done, _ = student.step(action)
@@ -672,7 +609,6 @@ def auto_run_strategy(strategy, student, current_history, start_step):
 # 独立的不确定性估计函数（避免依赖 strategy_ua）
 # ============================================================
 def compute_uncertainty(mastery, noise_scale=0.08, num_samples=30):
-    """独立计算当前状态的不确定性，不依赖策略对象"""
     temp_model = ConditionedDiffusionModel(noise_scale=noise_scale)
     samples = temp_model.sample_states(mastery, num_samples=num_samples)
     return UncertaintyEstimator.estimate_uncertainty(samples)
@@ -682,8 +618,8 @@ def compute_uncertainty(mastery, noise_scale=0.08, num_samples=30):
 # Streamlit 应用界面
 # ============================================================
 
-st.set_page_config(page_title="智学导航 · UA-MPC 演示", layout="wide")
-st.title("🧠 智学导航：基于不确定性感知的个性化学习路径规划系统 (UA-MPC)")
+st.set_page_config(page_title="Intelligent Learning Navigator · UA-MPC", layout="wide")
+st.title("🧠 Intelligent Learning Navigator: Uncertainty-Aware Instructional Planning (UA-MPC)")
 
 # 添加自定义 CSS 使表格所有单元格居中
 st.markdown("""
@@ -724,16 +660,16 @@ if 'done' not in st.session_state:
 if 'compare_mode' not in st.session_state:
     st.session_state.compare_mode = False
 if 'compare_type' not in st.session_state:
-    st.session_state.compare_type = "无不确定性 MPC"
+    st.session_state.compare_type = "MPC (No Uncertainty)"
 if 'use_paper_params' not in st.session_state:
     st.session_state.use_paper_params = False
 
 # 侧边栏配置
 with st.sidebar:
-    st.header("⚙️ 实验参数")
-    seed = st.number_input("随机种子", min_value=0, max_value=9999, value=42, step=1)
+    st.header("⚙️ Experiment Parameters")
+    seed = st.number_input("Random Seed", min_value=0, max_value=9999, value=42, step=1)
 
-    use_paper = st.checkbox("使用论文参数 (η=0.18, γ=0.16, 策略参数与论文一致)", value=st.session_state.use_paper_params)
+    use_paper = st.checkbox("Use Paper Parameters (η=0.18, γ=0.16)", value=st.session_state.use_paper_params)
     if use_paper != st.session_state.use_paper_params:
         st.session_state.use_paper_params = use_paper
         st.session_state.student = None
@@ -745,30 +681,30 @@ with st.sidebar:
         st.rerun()
 
     if use_paper:
-        st.info("当前使用论文固定参数：学习率=0.18，遗忘因子=0.16；UA-MPC 视野=5，λ=0.5；无不确定性 MPC 视野=3，随机探索概率0.15；DQN 初始ε=0.35")
+        st.info("Using paper parameters: learning rate=0.18, forget factor=0.16; UA-MPC horizon=5, λ=0.5; MPC (No Uncertainty) horizon=3, random exploration prob=0.15; DQN initial ε=0.35")
         env_lr = 0.18
         env_forget = 0.16
         difficulty_level = None
         default_lambda = 0.5
         default_noise = 0.08
     else:
-        difficulty_level = st.slider("环境难度", 0.0, 1.0, 0.8, 0.05)
+        difficulty_level = st.slider("Environment Difficulty", 0.0, 1.0, 0.8, 0.05)
         env_lr = 0.20 - difficulty_level * 0.10
         env_forget = 0.10 + difficulty_level * 0.15
-        st.caption(f"当前学习率: {env_lr:.2f}  遗忘因子: {env_forget:.2f}")
+        st.caption(f"Current learning rate: {env_lr:.2f}   Forgetting factor: {env_forget:.2f}")
         default_lambda = 0.6
         default_noise = 0.08
 
-    lambda_uw = st.slider("不确定性权重 λ (UA-MPC)", 0.0, 1.0, default_lambda, 0.05)
-    noise_scale = st.slider("扩散噪声尺度", 0.02, 0.2, default_noise, 0.01)
+    lambda_uw = st.slider("Uncertainty Weight λ (UA-MPC)", 0.0, 1.0, default_lambda, 0.05)
+    noise_scale = st.slider("Diffusion Noise Scale", 0.02, 0.2, default_noise, 0.01)
 
     st.divider()
-    st.header("🔀 对比模式")
-    compare_on = st.checkbox("开启策略对比", value=st.session_state.compare_mode)
+    st.header("🔀 Comparison Mode")
+    compare_on = st.checkbox("Enable Strategy Comparison", value=st.session_state.compare_mode)
     if compare_on:
         compare_type = st.selectbox(
-            "选择对比策略",
-            ["无不确定性 MPC", "SimpleEffective", "DQN", "随机策略", "BKT-Thompson", "IRT-MPC", "DKT-MPC"],
+            "Select Comparison Strategy",
+            ["MPC (No Uncertainty)", "SimpleEffective", "DQN", "Random", "BKT-Thompson", "IRT+Greedy", "DKT+Greedy"],
             index=0
         )
     else:
@@ -789,14 +725,14 @@ with st.sidebar:
 
     # 一键对比按钮（运行10次）
     if st.session_state.compare_mode and st.session_state.strategy_compare is not None:
-        if st.button("⚡ 一键对比（UA-MPC vs " + st.session_state.compare_type + "）", use_container_width=True):
-            runs = 10  # 运行10次
+        if st.button("⚡ One-Click Comparison (UA-MPC vs " + st.session_state.compare_type + ")", use_container_width=True):
+            runs = 10
             all_hist = []
             ua_curves = []
             comp_curves = []
             seeds = [seed + i for i in range(runs)]
 
-            with st.spinner(f"正在运行 {runs} 次实验..."):
+            with st.spinner(f"Running {runs} experiments..."):
                 try:
                     for s in seeds:
                         # UA-MPC
@@ -821,20 +757,20 @@ with st.sidebar:
                             use_paper_params=use_paper,
                             learning_rate=env_lr, forget_factor=env_forget
                         )
-                        if st.session_state.compare_type == "无不确定性 MPC":
+                        if st.session_state.compare_type == "MPC (No Uncertainty)":
                             strategy2 = MPC_NoUncertaintyStrategy(student_env=student2, paper_mode=use_paper)
                         elif st.session_state.compare_type == "SimpleEffective":
                             strategy2 = SimpleEffectiveStrategy()
                         elif st.session_state.compare_type == "DQN":
                             strategy2 = DQNStrategy(paper_mode=use_paper)
-                        elif st.session_state.compare_type == "随机策略":
+                        elif st.session_state.compare_type == "Random":
                             strategy2 = RandomStrategy()
                         elif st.session_state.compare_type == "BKT-Thompson":
                             strategy2 = BKTThompsonStrategy()
-                        elif st.session_state.compare_type == "IRT-MPC":
-                            strategy2 = IRTMPCStrategy(student_env=student2, paper_mode=use_paper)
-                        elif st.session_state.compare_type == "DKT-MPC":
-                            strategy2 = DKTMpcStrategy(student_env=student2, paper_mode=use_paper)
+                        elif st.session_state.compare_type == "IRT+Greedy":
+                            strategy2 = IRTGreedyStrategy()
+                        elif st.session_state.compare_type == "DKT+Greedy":
+                            strategy2 = DKTDKTGreedyStrategy()
                         else:
                             strategy2 = None
                         hist2, _ = auto_run_strategy(strategy2, student2, [], 0)
@@ -842,7 +778,7 @@ with st.sidebar:
                         all_hist.extend(hist2)
 
                 except Exception as e:
-                    st.error(f"运行出错: {e}")
+                    st.error(f"Error: {e}")
                     st.stop()
 
             # 计算均值和标准差
@@ -860,28 +796,26 @@ with st.sidebar:
             ax.fill_between(steps, ua_mean - ua_std, ua_mean + ua_std, color='#4C72B0', alpha=0.2)
             ax.plot(steps, comp_mean, 's-', color='#C44E52', label=st.session_state.compare_type)
             ax.fill_between(steps, comp_mean - comp_std, comp_mean + comp_std, color='#C44E52', alpha=0.2)
-            ax.set_xlabel("教学步数", fontsize=12)
-            ax.set_ylabel("平均知识水平", fontsize=12)
+            ax.set_xlabel("Instruction Step", fontsize=12)
+            ax.set_ylabel("Average Knowledge Level", fontsize=12)
             ax.set_ylim(0.2, 0.8)
             ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
             st.pyplot(fig)
 
-            st.success(f"运行 {runs} 次完成")
-            st.write(f"**UA-MPC 最终知识水平**：{ua_mean[-1]:.3f} ± {ua_std[-1]:.3f}")
-            st.write(f"**{st.session_state.compare_type} 最终知识水平**：{comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}")
+            st.success(f"Completed {runs} runs")
+            st.write(f"**UA-MPC Final Knowledge Level**: {ua_mean[-1]:.3f} ± {ua_std[-1]:.3f}")
+            st.write(f"**{st.session_state.compare_type} Final Knowledge Level**: {comp_mean[-1]:.3f} ± {comp_std[-1]:.3f}")
 
-            # 保留学生对象，以便热力图显示最终状态；清空策略对象避免干扰
             st.session_state.student = student2
             st.session_state.strategy_ua = None
             st.session_state.strategy_compare = None
             st.session_state.history = all_hist
             st.session_state.step_count = 45
             st.session_state.done = True
-            # 不再清空 student，这样热力图会显示最后一次运行结束时的状态
 
     st.divider()
-    if st.button("🔄 重置学生", use_container_width=True):
+    if st.button("🔄 Reset Student", use_container_width=True):
         st.session_state.student = SimulatedStudent(
             num_concepts=6, seed=seed, init_std=0.03,
             use_paper_params=use_paper,
@@ -894,7 +828,7 @@ with st.sidebar:
             paper_mode=use_paper
         )
         if st.session_state.compare_mode:
-            if st.session_state.compare_type == "无不确定性 MPC":
+            if st.session_state.compare_type == "MPC (No Uncertainty)":
                 st.session_state.strategy_compare = MPC_NoUncertaintyStrategy(
                     student_env=st.session_state.student,
                     paper_mode=use_paper
@@ -903,14 +837,14 @@ with st.sidebar:
                 st.session_state.strategy_compare = SimpleEffectiveStrategy()
             elif st.session_state.compare_type == "DQN":
                 st.session_state.strategy_compare = DQNStrategy(paper_mode=use_paper)
-            elif st.session_state.compare_type == "随机策略":
+            elif st.session_state.compare_type == "Random":
                 st.session_state.strategy_compare = RandomStrategy()
             elif st.session_state.compare_type == "BKT-Thompson":
                 st.session_state.strategy_compare = BKTThompsonStrategy()
-            elif st.session_state.compare_type == "IRT-MPC":
-                st.session_state.strategy_compare = IRTMPCStrategy(student_env=st.session_state.student, paper_mode=use_paper)
-            elif st.session_state.compare_type == "DKT-MPC":
-                st.session_state.strategy_compare = DKTMpcStrategy(student_env=st.session_state.student, paper_mode=use_paper)
+            elif st.session_state.compare_type == "IRT+Greedy":
+                st.session_state.strategy_compare = IRTGreedyStrategy()
+            elif st.session_state.compare_type == "DKT+Greedy":
+                st.session_state.strategy_compare = DKTDKTGreedyStrategy()
             else:
                 st.session_state.strategy_compare = None
         else:
@@ -921,25 +855,23 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption(f"当前步数: {st.session_state.step_count}/45")
+    st.caption(f"Current step: {st.session_state.step_count}/45")
     if st.session_state.done:
-        st.warning("教学已完成 (45步)")
+        st.warning("Teaching completed (45 steps)")
 
 # 主面板布局
 col_left, col_right = st.columns([2, 1.5])
 
 with col_left:
-    st.subheader("📊 当前知识状态 (含不确定性)")
+    st.subheader("📊 Current Knowledge State (with Uncertainty)")
 
     if st.session_state.student is not None:
         state = st.session_state.student.get_state()
         mastery = state['mastery']
 
-        # 独立计算不确定性，不依赖 strategy_ua
         cur_noise = st.session_state.get('noise_scale', 0.08) if 'noise_scale' in st.session_state else 0.08
         overall_uncertainty = compute_uncertainty(mastery, noise_scale=cur_noise, num_samples=30)
 
-        # 同时计算各概念的不确定性（标准差）用于条形图误差棒
         temp_model = ConditionedDiffusionModel(noise_scale=cur_noise)
         samples = temp_model.sample_states(mastery, num_samples=30)
         samples_array = np.array(samples)
@@ -948,7 +880,7 @@ with col_left:
 
         # 条形图
         fig, ax = plt.subplots(figsize=(10, 5))
-        concepts = [f'概念{i+1}' for i in range(6)]
+        concepts = [f'Concept {i+1}' for i in range(6)]
         x = np.arange(len(concepts))
         bars = ax.bar(x, mean_mastery, yerr=std_mastery, capsize=8,
                       color='#4C72B0', ecolor='#C44E52', alpha=0.9,
@@ -956,8 +888,8 @@ with col_left:
         ax.set_xticks(x)
         ax.set_xticklabels(concepts, fontsize=12)
         ax.set_ylim(0, 1)
-        ax.set_ylabel("掌握程度", fontsize=12)
-        ax.set_title("各概念掌握度均值 ± 不确定性 (标准差)", fontsize=14)
+        ax.set_ylabel("Mastery Level", fontsize=12)
+        ax.set_title("Concept Mastery Mean ± Uncertainty (Std Dev)", fontsize=14)
         ax.grid(True, alpha=0.3, axis='y')
         st.pyplot(fig)
 
@@ -968,45 +900,44 @@ with col_left:
         ax_heat.set_xticks(np.arange(len(concepts)))
         ax_heat.set_xticklabels(concepts, fontsize=10)
         ax_heat.set_yticks([])
-        ax_heat.set_title("各概念不确定性热力图（颜色越深，不确定性越高）", fontsize=12)
-        plt.colorbar(im, ax=ax_heat, orientation='horizontal', pad=0.2, label='不确定性值')
+        ax_heat.set_title("Concept Uncertainty Heatmap (darker = higher uncertainty)", fontsize=12)
+        plt.colorbar(im, ax=ax_heat, orientation='horizontal', pad=0.2, label='Uncertainty Value')
         st.pyplot(fig_heat)
 
         # 整体不确定性指标
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
-            st.metric("整体认知不确定性", f"{overall_uncertainty:.3f}")
+            st.metric("Overall Cognitive Uncertainty", f"{overall_uncertainty:.3f}")
         with col_m2:
-            st.progress(min(overall_uncertainty / 0.3, 1.0), text="不确定性水平")
+            st.progress(min(overall_uncertainty / 0.3, 1.0), text="Uncertainty Level")
         with col_m3:
-            st.metric("平均掌握度", f"{np.mean(mastery):.2f}")
+            st.metric("Average Mastery", f"{np.mean(mastery):.2f}")
 
         st.session_state.current_uncertainty = overall_uncertainty
     else:
-        st.info("请先在侧边栏点击「重置学生」开始")
+        st.info("Please click 'Reset Student' in the sidebar to start")
 
 # ========== 右侧决策区域 ==========
 with col_right:
     if st.session_state.student is not None and not st.session_state.done:
         state = st.session_state.student.get_state()
-        concept_names = [f'概念{i+1}' for i in range(6)]
+        concept_names = [f'Concept {i+1}' for i in range(6)]
 
-        # 教师提示语（当不确定性过高时）
         overall_uncertainty = st.session_state.get('current_uncertainty', 0.0)
         if overall_uncertainty > 0.1:
-            st.warning("🧑‍🏫 教师提示：当前学生状态不确定性较高，建议教师给予针对性辅导。")
+            st.warning("🧑‍🏫 Teacher Tip: Student state uncertainty is high. Consider personalized guidance.")
 
         # --- UA-MPC 决策卡片 ---
         with st.container(border=True):
-            st.subheader("🎯 UA-MPC 决策")
+            st.subheader("🎯 UA-MPC Decision")
             recommended_action_ua = st.session_state.strategy_ua.select_action(state)
             rec_name_ua = concept_names[recommended_action_ua]
 
             col_rec1, col_rec2, col_rec3 = st.columns([1, 1, 1])
             with col_rec1:
-                st.metric("推荐概念", rec_name_ua, delta=None)
+                st.metric("Recommended Concept", rec_name_ua, delta=None)
             with col_rec2:
-                if st.button("✅ 执行", key="btn_ua", use_container_width=True):
+                if st.button("✅ Execute", key="btn_ua", use_container_width=True):
                     action = recommended_action_ua
                     next_state, reward, done, _ = st.session_state.student.step(action)
                     st.session_state.strategy_ua.update(action, reward, next_state)
@@ -1025,7 +956,7 @@ with col_right:
                     st.session_state.done = done
                     st.rerun()
             with col_rec3:
-                if st.button("⚡ 自动45步", key="auto_ua", use_container_width=True):
+                if st.button("⚡ Auto 45 Steps", key="auto_ua", use_container_width=True):
                     new_hist, new_step = auto_run_strategy(
                         st.session_state.strategy_ua,
                         st.session_state.student,
@@ -1037,25 +968,25 @@ with col_right:
                     st.session_state.done = (new_step >= 45)
                     st.rerun()
 
-            with st.expander("查看选择依据"):
+            with st.expander("View Rationale"):
                 mastery = state['mastery']
                 difficulty = state['difficulties'][recommended_action_ua]
-                st.write(f"- 掌握度: {mastery[recommended_action_ua]:.2f}")
-                st.write(f"- 难度: {difficulty:.2f}")
-                st.write(f"- 不确定性惩罚权重 λ={st.session_state.strategy_ua.uncertainty_weight:.2f}")
+                st.write(f"- Mastery Level: {mastery[recommended_action_ua]:.2f}")
+                st.write(f"- Difficulty: {difficulty:.2f}")
+                st.write(f"- Uncertainty Penalty Weight λ={st.session_state.strategy_ua.uncertainty_weight:.2f}")
 
         # --- 对比策略决策卡片 (如果开启) ---
         if st.session_state.compare_mode and st.session_state.strategy_compare is not None:
             with st.container(border=True):
-                st.subheader(f"🔄 {st.session_state.strategy_compare.name} 决策")
+                st.subheader(f"🔄 {st.session_state.strategy_compare.name} Decision")
                 recommended_action_comp = st.session_state.strategy_compare.select_action(state)
                 rec_name_comp = concept_names[recommended_action_comp]
 
                 col_rec1, col_rec2, col_rec3 = st.columns([1, 1, 1])
                 with col_rec1:
-                    st.metric("推荐概念", rec_name_comp, delta=None)
+                    st.metric("Recommended Concept", rec_name_comp, delta=None)
                 with col_rec2:
-                    if st.button(f"✅ 执行", key="btn_comp", use_container_width=True):
+                    if st.button(f"✅ Execute", key="btn_comp", use_container_width=True):
                         action = recommended_action_comp
                         next_state, reward, done, _ = st.session_state.student.step(action)
                         st.session_state.strategy_compare.update(action, reward, next_state)
@@ -1074,7 +1005,7 @@ with col_right:
                         st.session_state.done = done
                         st.rerun()
                 with col_rec3:
-                    if st.button(f"⚡ 自动45步", key="auto_comp", use_container_width=True):
+                    if st.button(f"⚡ Auto 45 Steps", key="auto_comp", use_container_width=True):
                         new_hist, new_step = auto_run_strategy(
                             st.session_state.strategy_compare,
                             st.session_state.student,
@@ -1086,54 +1017,63 @@ with col_right:
                         st.session_state.done = (new_step >= 45)
                         st.rerun()
 
-                with st.expander("查看选择依据"):
+                with st.expander("View Rationale"):
                     mastery = state['mastery']
                     difficulty = state['difficulties'][recommended_action_comp]
-                    st.write(f"- 掌握度: {mastery[recommended_action_comp]:.2f}")
-                    st.write(f"- 难度: {difficulty:.2f}")
+                    st.write(f"- Mastery Level: {mastery[recommended_action_comp]:.2f}")
+                    st.write(f"- Difficulty: {difficulty:.2f}")
 
     elif st.session_state.done:
-        st.info("已达到最大步数，请重置学生重新开始。")
+        st.info("Maximum steps reached. Reset student to restart.")
     else:
-        st.info("请先重置学生")
+        st.info("Please reset student first")
 
 # ========== 历史记录与学习曲线 ==========
 st.divider()
 
-st.subheader("📋 教学历史记录")
+st.subheader("📋 Teaching History")
 if st.session_state.history:
-    # 导出CSV按钮（修复中文乱码）
+    # 导出CSV（英文表头）
     df = pd.DataFrame(st.session_state.history)
-    csv_data = df.to_csv(index=False, encoding='utf-8-sig')
+    # 重命名列为英文
+    df_export = df.rename(columns={
+        'step': 'Step',
+        'strategy': 'Strategy',
+        'action_name': 'Concept',
+        'reward': 'Reward',
+        'knowledge_mean': 'Avg Knowledge',
+        'uncertainty': 'Uncertainty'
+    })
+    csv_data = df_export.to_csv(index=False, encoding='utf-8')
     st.download_button(
-        label="📥 导出历史记录为CSV",
+        label="📥 Export History as CSV",
         data=csv_data,
         file_name="teaching_history.csv",
         mime="text/csv",
         use_container_width=True
     )
-    # 显示表格
+    # 显示表格（中文表头）
     df_display = df[['step', 'strategy', 'action_name', 'reward', 'knowledge_mean', 'uncertainty']].copy()
-    df_display.columns = ['步数', '策略', '教学概念', '奖励', '平均知识水平', '不确定性']
+    df_display.columns = ['Step', 'Strategy', 'Concept', 'Reward', 'Avg Knowledge', 'Uncertainty']
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 else:
-    st.caption("暂无历史记录")
+    st.caption("No history yet")
 
 if st.session_state.history:
-    st.subheader("📈 平均知识水平学习曲线")
+    st.subheader("📈 Average Knowledge Level Learning Curve")
     fig2, ax2 = plt.subplots(figsize=(12, 5))
 
     df_plot = pd.DataFrame(st.session_state.history)
     strategies = df_plot['strategy'].unique()
     colors = {
         'UA-MPC': '#4C72B0',
-        '无不确定性 MPC': '#C44E52',
+        'MPC (No Uncertainty)': '#C44E52',
         'SimpleEffective': '#8172B2',
-        '随机策略': '#2ca02c',
+        'Random': '#2ca02c',
         'DQN': '#ff7f0e',
         'BKT-Thompson': '#9467bd',
-        'IRT-MPC': '#8c564b',
-        'DKT-MPC': '#e377c2'
+        'IRT+Greedy': '#8c564b',
+        'DKT+Greedy': '#e377c2'
     }
 
     for strategy in strategies:
@@ -1143,8 +1083,8 @@ if st.session_state.history:
         ax2.plot(steps, knowledge, 'o-', linewidth=2, markersize=6,
                  color=colors.get(strategy, '#000000'), label=strategy)
 
-    ax2.set_xlabel("教学步数", fontsize=12)
-    ax2.set_ylabel("平均知识水平", fontsize=12)
+    ax2.set_xlabel("Instruction Step", fontsize=12)
+    ax2.set_ylabel("Average Knowledge Level", fontsize=12)
     ax2.set_ylim(0.2, 0.8)
     ax2.legend(fontsize=11)
     ax2.grid(True, alpha=0.3)
@@ -1152,12 +1092,12 @@ if st.session_state.history:
 
 st.divider()
 st.markdown("""
-**智学导航**：基于不确定性感知的教学规划系统 (UA-MPC)  
+****智学导航**：基于不确定性感知的教学规划系统 (UA-MPC)  
 - 使用条件扩散模型生成知识状态分布，量化认知不确定性  
 - 在模型预测控制中显式惩罚高不确定性，实现稳健教学决策  
 - 支持论文固定参数模式（勾选后参数与论文实验脚本完全一致）  
 - 一键对比功能：自动运行10次实验，绘制带误差带的平均学习曲线  
-- 对比策略：无不确定性MPC、SimpleEffective、DQN、随机策略、BKT-Thompson、IRT-MPC、DKT-MPC  
+- 对比策略：无不确定性MPC、SimpleEffective、DQN、随机策略、BKT-Thompson、IRT+贪心、DKT+贪心  
 - 辅助功能：不确定性热力图、数据导出、教师提示语
 
 ---
@@ -1172,3 +1112,5 @@ st.markdown("""
 3. **深度学习框架迁移潜力**  
    核心算法（UA-MPC 的条件扩散模型、不确定性量化模块）已做 **框架无关性设计**，未使用 TensorFlow/PyTorch 专属 API，可快速迁移至百度飞桨（PaddlePaddle）、华为 MindSpore 等国产深度学习框架，迁移成本低于 10%。
 """)
+
+
