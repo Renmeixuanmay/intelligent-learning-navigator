@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "com.renmeixuanmay.intelligentlearningnav",
+    "bundleName": "com.renmeixuanmay.myapplication",
     "vendor": "example",
     "versionCode": 1000000,
     "versionName": "1.0.0",

@@ -3,14 +3,14 @@
 为 QClaw 自定义 Skill 提供 HTTP 调用接口
 """
 
+# api.py - QClaw 智能体 API 服务
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import numpy as np
-import os
 
-# 导入你的核心算法类（直接从 app.py 复用）
-from app import (
+# 从 core 导入所需算法类
+from core import (
     SimulatedStudent,
     UA_MPCStrategy,
     ConditionedDiffusionModel,
